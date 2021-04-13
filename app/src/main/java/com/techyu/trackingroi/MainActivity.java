@@ -55,6 +55,12 @@ public class MainActivity extends AppCompatActivity {
     private float mEulerY;
     private float mEulerZ;
 
+    private String image_test;
+    private Bitmap mbitmap;
+    private boolean bitFlag=false;
+    private boolean onceFlag=false;
+
+
 
     // CAMERA VERSION ONE DECLARATIONS
     private CameraSource mCameraSource = null;
@@ -67,7 +73,7 @@ public class MainActivity extends AppCompatActivity {
     private FaceGraphic mFaceGraphic;
     private boolean wasActivityResumed = false;
     private boolean isRecordingVideo = false;
-    private boolean flashEnabled = false;
+    private boolean flashEnabled = true;
 
     // DEFAULT CAMERA BEING OPENED
     private boolean usingFrontCamera = true;
@@ -86,6 +92,10 @@ public class MainActivity extends AppCompatActivity {
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
         setContentView(binding.getRoot());
         context = getApplicationContext();
+        String rootDir = this.getExternalFilesDir("pic").getAbsolutePath();
+        Log.d(TAG, "onCreate: rootDir"+rootDir);
+        image_test = rootDir+"/test.png";
+
 
         //设置按键相关的点击事件
         if(checkGooglePlayAvailability()) {
@@ -170,10 +180,28 @@ public class MainActivity extends AppCompatActivity {
                     }
                 }
             });
-
             binding.mPreview.setOnTouchListener(CameraPreviewTouchListener);
         }
+//        //此处代码测试用，保存ROI图片到本地查看，仅开发用，发布版本绝不能包含（因为涉嫌侵犯用户隐私）
+//        while(true){
+//            if(bitFlag&&onceFlag){
+//                File file = new File(image_test);
+//                onceFlag = false;
+//                try {
+//                    file.createNewFile();
+//                    FileOutputStream fos = new FileOutputStream(file);
+//                    mbitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+//                    fos.close();
+//                    Log.d(TAG, "onCreate: 执行了保存");
+//                } catch (IOException e) {
+//                    e.printStackTrace();
+//                }
+//            }
+//            break;
+//        }
+
     }
+    //This is the end of onCreatView
 
     /**
      * 安卓初始Camera api相关回调设置
@@ -324,6 +352,7 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onPictureTaken(Bitmap image) {
             Log.d(TAG, "Taken picture is ready!");
+
             runOnUiThread(() -> {
                 binding.status.setText("picture taken");
                 binding.switchButton.setEnabled(true);
@@ -506,7 +535,9 @@ public class MainActivity extends AppCompatActivity {
             startCameraSource();
         }
     }
-
+    /*
+    开启相机预览，判断使用camera API还是camera2
+     */
     private void startCameraSource() {
         if(useCamera2) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {//安卓版本大于5.0启用Camera2
@@ -522,21 +553,30 @@ public class MainActivity extends AppCompatActivity {
             }
         }
     }
-
+    /*
+    停止相机预览
+     */
     private void stopCameraSource() {
         binding.mPreview.stop();
     }
 
+    /*
+    人脸跟踪，工厂类
+     */
     private class GraphicFaceTrackerFactory implements MultiProcessor.Factory<Face> {
         @Override
         public Tracker<Face> create(@NonNull Face face) {
             return new GraphicFaceTracker(binding.mGraphicOverlay);
         }
     }
-
+    /*
+    内部类，人脸特征点追踪
+     */
     private class GraphicFaceTracker extends Tracker<Face> {
         private final GraphicOverlay mOverlay;
-
+        /*
+        构造函数
+         */
         GraphicFaceTracker(GraphicOverlay overlay) {
             mOverlay = overlay;
             mFaceGraphic = new FaceGraphic(overlay, context);
@@ -552,6 +592,7 @@ public class MainActivity extends AppCompatActivity {
         }
 
         /**
+         * 更新人脸特征点位置
          * Update the position/characteristics of the face within the overlay.
          */
         @Override
@@ -559,6 +600,9 @@ public class MainActivity extends AppCompatActivity {
             mOverlay.add(mFaceGraphic);
             mFaceGraphic.updateFace(face);
             mFaceGraphic.getPositions();
+            mbitmap = mCamera2Source.getBitmap();
+            Log.d(TAG, "onUpdate: mbitmap是否为null"+mbitmap.getHeight());
+            bitFlag =true;
             System.out.println("face位置"+face.getWidth()+"---"+face.getHeight()+"---"+face.getPosition());
             BigDecimal b0= new BigDecimal(face.getEulerX());//获取欧拉角
             BigDecimal b1= new BigDecimal(face.getEulerY());
@@ -567,9 +611,9 @@ public class MainActivity extends AppCompatActivity {
             mEulerY = b1.setScale(2,BigDecimal.ROUND_HALF_UP).floatValue();
             mEulerZ = b2.setScale(2,BigDecimal.ROUND_HALF_UP).floatValue();
             runOnUiThread(() -> {
-                binding.eulerX.setText("EulerX:"+mEulerX);
-                binding.eulerY.setText("EulerY:"+mEulerY);
-                binding.eulerZ.setText("EulerZ:"+mEulerZ);
+                binding.eulerX.setText("上下点头:"+mEulerX);
+                binding.eulerY.setText("左右转头:"+mEulerY);
+                binding.eulerZ.setText("左右摆头:"+mEulerZ);
             });
             Log.d(TAG, "NEW KNOWN FACE UPDATE: "+face.getId());
         }
@@ -605,6 +649,9 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * 设置触摸点击对焦事件
+     */
     private final CameraSourcePreview.OnTouchListener CameraPreviewTouchListener = new CameraSourcePreview.OnTouchListener() {
         @Override
         public boolean onTouch(View v, MotionEvent pEvent) {

@@ -33,6 +33,10 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
+import android.renderscript.Allocation;
+import android.renderscript.Element;
+import android.renderscript.RenderScript;
+import android.renderscript.ScriptIntrinsicYuvToRGB;
 import android.util.Log;
 import android.util.SparseIntArray;
 import android.view.MotionEvent;
@@ -98,6 +102,8 @@ public class Camera2Source {
     private static final SparseIntArray INVERSE_ORIENTATIONS = new SparseIntArray();
     private boolean cameraStarted = false;
     private int mSensorOrientation;
+    private Bitmap bitmap;
+    private boolean bitmapReady=false;
 
     /**
      * A reference to the opened {@link CameraDevice}.
@@ -233,12 +239,13 @@ public class Camera2Source {
     private ImageReader mImageReaderPreview;
 
     /**
+     * 根据当前相机状态处理不同回调
      * A {@link CameraCaptureSession.CaptureCallback} that handles events related to JPEG capture.
      */
     private final CameraCaptureSession.CaptureCallback mCaptureCallback = new CameraCaptureSession.CaptureCallback() {
 
         private void process(CaptureResult result) {
-            switch (mState) {
+            switch (mState) {//判断当前相机状态
                 case STATE_PREVIEW: {
                     // We have nothing to do when the camera preview is working normally.
                     break;
@@ -320,6 +327,7 @@ public class Camera2Source {
     };
 
     /**
+     * 这里就是每一帧图像好了之后等待被处理的回调函数
      * This is a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
      * preview frame is ready to be processed.
      */
@@ -331,9 +339,114 @@ public class Camera2Source {
                 return;
             }
             mFrameProcessor.setNextFrame(convertYUV420888ToNV21(mImage));
+            //获取rgb信息
+            long times = System.currentTimeMillis();
+            ByteBuffer yuvBytes = this.imageToByteBuffer(mImage);
+            //Convert YUV to RGB
+            RenderScript rs = RenderScript.create(mContext);
+
+            bitmap = Bitmap.createBitmap(mImage.getWidth(), mImage.getHeight(), Bitmap.Config.ARGB_8888);
+            Allocation allocationRgb = Allocation.createFromBitmap(rs, bitmap);
+
+            Allocation allocationYuv = Allocation.createSized(rs, Element.U8(rs), yuvBytes.array().length);
+            allocationYuv.copyFrom(yuvBytes.array());
+
+            ScriptIntrinsicYuvToRGB scriptYuvToRgb = ScriptIntrinsicYuvToRGB.create(rs, Element.U8_4(rs));
+            scriptYuvToRgb.setInput(allocationYuv);
+            scriptYuvToRgb.forEach(allocationRgb);
+            allocationRgb.copyTo(bitmap);
+            Log.d(TAG, "onImageAvailable: bitmap"+bitmap.getWidth());
+            // Release
+            bitmap.recycle();
+            allocationYuv.destroy();
+            allocationRgb.destroy();
+            rs.destroy();
             mImage.close();
+            bitmapReady=true;
+            Log.d(TAG, "onImageAvailable: bitmap"+bitmap.getHeight());
+            times =System.currentTimeMillis()-times;
+            Log.d(TAG, "onImageAvailable: 耗时"+times);
         }
+
+        /**
+         * 将Image数据转换成字节数组
+         * @param image
+         * @return
+         */
+        private ByteBuffer imageToByteBuffer(final Image image) {
+            final Rect crop   = image.getCropRect();
+            final int  width  = crop.width();
+            final int  height = crop.height();
+
+            final Image.Plane[] planes     = image.getPlanes();
+            final byte[]        rowData    = new byte[planes[0].getRowStride()];
+            final int           bufferSize = width * height * ImageFormat.getBitsPerPixel(ImageFormat.YUV_420_888) / 8;
+            final ByteBuffer    output     = ByteBuffer.allocateDirect(bufferSize);
+
+            int channelOffset = 0;
+            int outputStride = 0;
+
+            for (int planeIndex = 0; planeIndex < 3; planeIndex++)
+            {
+                if (planeIndex == 0)
+                {
+                    channelOffset = 0;
+                    outputStride = 1;
+                }
+                else if (planeIndex == 1)
+                {
+                    channelOffset = width * height + 1;
+                    outputStride = 2;
+                }
+                else if (planeIndex == 2)
+                {
+                    channelOffset = width * height;
+                    outputStride = 2;
+                }
+
+                final ByteBuffer buffer      = planes[planeIndex].getBuffer();
+                final int        rowStride   = planes[planeIndex].getRowStride();
+                final int        pixelStride = planes[planeIndex].getPixelStride();
+
+                final int shift         = (planeIndex == 0) ? 0 : 1;
+                final int widthShifted  = width >> shift;
+                final int heightShifted = height >> shift;
+
+                buffer.position(rowStride * (crop.top >> shift) + pixelStride * (crop.left >> shift));
+
+                for (int row = 0; row < heightShifted; row++)
+                {
+                    final int length;
+
+                    if (pixelStride == 1 && outputStride == 1)
+                    {
+                        length = widthShifted;
+                        buffer.get(output.array(), channelOffset, length);
+                        channelOffset += length;
+                    }
+                    else
+                    {
+                        length = (widthShifted - 1) * pixelStride + 1;
+                        buffer.get(rowData, 0, length);
+
+                        for (int col = 0; col < widthShifted; col++)
+                        {
+                            output.array()[channelOffset] = rowData[col * pixelStride];
+                            channelOffset += outputStride;
+                        }
+                    }
+
+                    if (row < heightShifted - 1)
+                    {
+                        buffer.position(buffer.position() + rowStride - length);
+                    }
+                }
+            }
+            return output;
+        }
+
     };
+
 
     /**
      * This is a callback object for the {@link ImageReader}. "onImageAvailable" will be called when a
@@ -375,7 +488,8 @@ public class Camera2Source {
     // Builder
     //==============================================================================================
 
-    /**
+    /**\
+     * 用来辅助创建Camera2Source对象，复杂对象实例化
      * Builder for configuring and creating an associated camera source.
      */
     public static class Builder {
@@ -424,7 +538,7 @@ public class Camera2Source {
          * Creates an instance of the camera source.
          */
         public com.techyu.trackingroi.Camera.Camera2Source build() {
-            mCameraSource.mFrameProcessor = mCameraSource.new FrameProcessingRunnable(mDetector);
+            mCameraSource.mFrameProcessor = mCameraSource.new FrameProcessingRunnable(mDetector);//处理帧数据内部类
             return mCameraSource;
         }
     }
@@ -697,6 +811,14 @@ public class Camera2Source {
         mOnImageAvailableListener.mDelegate = picCallback;
         lockFocus();
         Log.d(TAG, "takePicture: 进入了拍摄");
+    }
+
+    /**
+     * 获取图像bitmap数据
+     * @return
+     */
+    public Bitmap getBitmap() {
+        return bitmap;
     }
 
     public void recordVideo(@NonNull VideoStartCallback videoStartCallback, @NonNull VideoStopCallback videoStopCallback, @NonNull VideoErrorCallback videoErrorCallback, @NonNull String filenameAndExtension, boolean mute) {
@@ -1261,6 +1383,73 @@ public class Camera2Source {
         }
     }
 
+//    //本线程专门处理实时心率
+//    private class RTHrThread implements Runnable {
+//        float[][] multi_channel_data;
+//        float[] input_data;
+//        float RTfps;
+//
+//        public RTHrThread(float[][] multi_channel_data, float fs) {
+//            this.multi_channel_data=multi_channel_data;
+//            this.RTfps=fs;
+//            if(this.RTfps>30){
+//                this.RTfps=30;
+//            }
+//            LogUtils.d("实时采样率："+Float.toString(RTfps));
+//        }
+//
+//        @Override
+//        public void run() {
+//            try {
+//                if(cnt<FRAME_NUM) {
+//                    LogUtils.d("R通道波形："+ Arrays.toString(multi_channel_data[0]));
+//                    LogUtils.d("G通道波形："+Arrays.toString(multi_channel_data[1]));
+//                    LogUtils.d("B通道波形："+Arrays.toString(multi_channel_data[2]));
+//                    //这里实时心率的计算 指尖选择R通道，面部选择H通道
+//                    if (cameraType == 1) {
+//                        input_data = multi_channel_data[1]; //H通道
+//                    }
+//                    else {
+//                        input_data = multi_channel_data[0]; //红色通道
+//                    }
+//                    //计算实时心率
+//                    if(face_detect_success==1) {
+//                        //程序卡顿告警
+//                        if(RTfps<10.0 && dialog_flag==0){
+//                            ShowFrErrDialog();
+//                            dialog_flag=1;
+//                        }else if(RTfps<20){
+//                            showToast("温馨提示：您的手机性能较低，可能导致检测精度下降！");
+//                        }
+//
+//                        //无异常告警弹窗时启动实时心率计算
+//                        //如有异常告警弹窗，必须先清除弹窗，否则本进程不会计算实时心率
+//                        if(dialog_flag==0) {
+//                            //提取脉搏波
+//                            float[] output_data=ExtractPulseWave(input_data,RTfps);
+//                            //计算心率
+//                            //heartRateValue=ComputeHrByPeakDetection(output_data,RTfps);
+//                            double[] spec = Algorithm.CalcPulseSpectrum(output_data,RTfps);
+//                            LogUtils.d("实时频谱："+Arrays.toString(spec));
+//                            int loc = Algorithm.findMaxLocation(spec);
+//                            heartRateValue = (int) (60 * RTfps * loc / spec.length);
+//                            LogUtils.d("实时心率："+heartRateValue+" ,loc="+loc+" ,N="+spec.length);
+//
+//                            //实时心率筛选、存储与显示
+//                            showRealTimeHr(heartRateValue);
+//                        }
+//                    }
+//
+//                }
+//            } catch (Exception e) {
+//                e.printStackTrace();
+//            } finally {
+//
+//            }
+//        }
+//    }
+
+
     /**
      * This runnable controls access to the underlying receiver, calling it to process frames when
      * available from the camera.  This is designed to run detection on frames as fast as possible
@@ -1334,6 +1523,7 @@ public class Camera2Source {
             }
         }
 
+
         /**
          * As long as the processing thread is active, this executes detection on frames
          * continuously.  The next pending frame is either immediately available or hasn't been
@@ -1372,7 +1562,8 @@ public class Camera2Source {
                         // loop.
                         return;
                     }
-
+//                    long time1 = System.currentTimeMillis();
+                    //输出特征点追踪的位置
                     outputFrame = new Frame.Builder()
                             .setImageData(ByteBuffer.wrap(quarterNV21(mPendingFrameData, mPreviewSize.getWidth(), mPreviewSize.getHeight())), mPreviewSize.getWidth()/4, mPreviewSize.getHeight()/4, ImageFormat.NV21)
                             .setId(mPendingFrameId)
@@ -1383,6 +1574,9 @@ public class Camera2Source {
                     // We need to clear mPendingFrameData to ensure that this buffer isn't
                     // recycled back to the camera before we are done using that data.
                     mPendingFrameData = null;
+
+//                    time1 =System.currentTimeMillis()-time1;
+//                    Log.d(TAG, "outputFrame: 耗时"+time1);
                 }
 
                 // The code below needs to run outside of synchronization, because this will allow
@@ -1396,6 +1590,7 @@ public class Camera2Source {
                 }
             }
         }
+
     }
 
     /**
