@@ -130,9 +130,12 @@ public class Camera2Source {
     private static final int STATE_WAITING_NON_PRECAPTURE = 3;
     //Camera state: Picture was taken.
     private static final int STATE_PICTURE_TAKEN = 4;
-    //设置采集尺寸
-    private static int PREVIEW_WIDTH = 1920;
-    private static int PREVIEW_HEIGHT = 1080;
+    //设置采集尺寸 1080p
+//    private static int PREVIEW_WIDTH = 1920;
+//    private static int PREVIEW_HEIGHT = 1080;
+    //设置采集尺寸 720p
+    private static int PREVIEW_WIDTH = 1280;
+    private static int PREVIEW_HEIGHT = 720;
 
     private int mDisplayOrientation;
 
@@ -355,15 +358,15 @@ public class Camera2Source {
             scriptYuvToRgb.setInput(allocationYuv);
             scriptYuvToRgb.forEach(allocationRgb);
             allocationRgb.copyTo(bitmap);
-            Log.d(TAG, "onImageAvailable: bitmap"+bitmap.getWidth());
+//            Log.d(TAG, "onImageAvailable: bitmap"+bitmap.getWidth());
             // Release
-            bitmap.recycle();
+//            bitmap.recycle();
             allocationYuv.destroy();
             allocationRgb.destroy();
             rs.destroy();
             mImage.close();
             bitmapReady=true;
-            Log.d(TAG, "onImageAvailable: bitmap"+bitmap.getHeight());
+//            Log.d(TAG, "onImageAvailable: bitmap"+bitmap.getHeight());
             times =System.currentTimeMillis()-times;
             Log.d(TAG, "onImageAvailable: 耗时"+times);
         }

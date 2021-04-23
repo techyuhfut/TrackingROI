@@ -46,8 +46,23 @@
             android:id="@+id/mGraphicOverlay"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <com.techyu.trackingroi.Utils.DynamicWave
+            android:id="@+id/dynamic_wave"
+            android:layout_marginTop="200dp"
+            android:layout_width="match_parent"
+            android:layout_height="150dp" />
     </com.techyu.trackingroi.Camera.CameraSourcePreview>
 
+    <TextView
+        android:id="@+id/heartrate"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text=" "
+        android:visibility="visible"
+        android:textSize="20sp"
+        android:textColor="@android:color/white" />
     <TextView
         android:id="@+id/cameraVersion"
         android:layout_width="wrap_content"

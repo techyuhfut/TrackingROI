@@ -5,14 +5,21 @@ import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Matrix;
+import android.graphics.PointF;
 import android.media.CamcorderProfile;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Chronometer;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -23,6 +30,8 @@ import androidx.core.content.ContextCompat;
 
 import com.techyu.trackingroi.Camera.Camera2Source;
 import com.techyu.trackingroi.Camera.FaceGraphic;
+import com.techyu.trackingroi.Utils.Algorithm;
+import com.techyu.trackingroi.Utils.DynamicWave;
 import com.techyu.trackingroi.databinding.ActivityMainBinding;
 import com.techyu.trackingroi.Utils.Utils;
 import com.google.android.gms.common.ConnectionResult;
@@ -37,13 +46,20 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
+import java.util.Arrays;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 
 import com.techyu.trackingroi.Camera.CameraSource;
 import com.techyu.trackingroi.Camera.CameraSourcePreview;
 import com.techyu.trackingroi.Camera.GraphicOverlay;
+
+import org.apache.commons.math3.stat.ranking.NaNStrategy;
+
+import static java.lang.Float.NaN;
+import static java.lang.Float.isNaN;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "Camera2 Vision";
@@ -55,10 +71,40 @@ public class MainActivity extends AppCompatActivity {
     private float mEulerY;
     private float mEulerZ;
 
+    private Handler AvgRGBHandler; //计算像素平均线程
+    private Handler RealtimeHRHandler; //计算实时心率线程
+    private Handler DWTransHandler;//绘制动态波形线程
+
+
+
     private String image_test;
+    private String image_test1;
+
     private Bitmap mbitmap;
-    private boolean bitFlag=false;
-    private boolean onceFlag=false;
+    private Bitmap bitmap;
+
+    public boolean ROIFlag = true;
+    public boolean AvgRGBFlag = false;
+    public boolean frameFlag = true;
+
+    final public int FRAME_NUM=512;
+    final public int WINDOW_SIZE=256;
+    final public int DATA_PREPARE=60;  //受相机自动变焦影响，前60个数据舍弃
+
+    public int cntFrame = 0;
+    public int cntFace = 0;
+    public int cntPrepare = 0;
+    public long mRecordTime = 0;
+
+    long timer = 0;
+
+    private DynamicWave dynamicWave;
+
+
+    public float[][] pulse_rgb=new float[3][FRAME_NUM];
+    public float[][] dynamic_rgb=new float[3][WINDOW_SIZE]; //存储滑动数组，用于计算实时心率
+//    public static volatile int heartRateValue;
+    public static int heartRateValue;
 
 
 
@@ -95,6 +141,14 @@ public class MainActivity extends AppCompatActivity {
         String rootDir = this.getExternalFilesDir("pic").getAbsolutePath();
         Log.d(TAG, "onCreate: rootDir"+rootDir);
         image_test = rootDir+"/test.png";
+        image_test1 = rootDir+"/test1.png";
+        //绘制动态波形
+        dynamicWave=(DynamicWave)findViewById(R.id.dynamic_wave);
+        dynamicWave.setWaveColor(0x7fFF9A18);
+        Handler DWTrans_handle = getDWTransHandler();
+        if (DWTrans_handle != null) {
+            DWTrans_handle.post(new DWTransThread(-1, true, true));
+        }
 
 
         //设置按键相关的点击事件
@@ -574,6 +628,7 @@ public class MainActivity extends AppCompatActivity {
      */
     private class GraphicFaceTracker extends Tracker<Face> {
         private final GraphicOverlay mOverlay;
+//        private Handler AvgRGBHandler; //计算心率平均线程
         /*
         构造函数
          */
@@ -597,12 +652,38 @@ public class MainActivity extends AppCompatActivity {
          */
         @Override
         public void onUpdate(@NonNull FaceDetector.Detections<Face> detectionResults, @NonNull Face face) {
+            long times = System.currentTimeMillis();
+            if(cntPrepare<DATA_PREPARE){
+//                timer.setBase(SystemClock.elapsedRealtime());//计时器复位
+            }
+            cntFace++;
+            Log.d(TAG, "onUpdate: 获取第"+cntFace+"帧人脸");
             mOverlay.add(mFaceGraphic);
             mFaceGraphic.updateFace(face);
-            mFaceGraphic.getPositions();
+            List<PointF> landmarkPositions =  mFaceGraphic.getLandmarkPositions();
+            int[] facePositions =  mFaceGraphic.getFacePositions();
             mbitmap = mCamera2Source.getBitmap();
-            Log.d(TAG, "onUpdate: mbitmap是否为null"+mbitmap.getHeight());
-            bitFlag =true;
+//            if(ROIFlag&cntFrame==100){
+//                File file = new File(image_test);
+//                try {
+//                    file.createNewFile();
+//                    FileOutputStream fos = new FileOutputStream(file);
+//                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+//                    fos.close();
+//                    Log.d(TAG, "保存ROI区域");
+//                } catch (IOException e) {
+//                    e.printStackTrace();
+//                }
+//            }
+//            float RTfps = (float)cntFrame / duration_sum;
+//            float RTfps = 30;
+            //启动RGB均值计算线程
+            if(frameFlag){
+                AvgRGBHandler = getAvgRGBHandler();
+                if (AvgRGBHandler != null) {
+                    AvgRGBHandler.post(new AvgRGBThread(mbitmap,facePositions,landmarkPositions)); //后台进程，实现实时getRGB
+                }
+            }
             System.out.println("face位置"+face.getWidth()+"---"+face.getHeight()+"---"+face.getPosition());
             BigDecimal b0= new BigDecimal(face.getEulerX());//获取欧拉角
             BigDecimal b1= new BigDecimal(face.getEulerY());
@@ -614,7 +695,71 @@ public class MainActivity extends AppCompatActivity {
                 binding.eulerX.setText("上下点头:"+mEulerX);
                 binding.eulerY.setText("左右转头:"+mEulerY);
                 binding.eulerZ.setText("左右摆头:"+mEulerZ);
+                if(heartRateValue!=0)
+                binding.heartrate.setText("HeartRate:"+heartRateValue);
             });
+
+            //getRGB
+            //获取rgb值 像素点个数，输出数组长度
+//            if(frameFlag){//当处理来不及时自动丢弃部分 图像帧不计算
+//                frameFlag = false;
+//                int left = facePositions[2];
+//                int right = facePositions[3];
+//                int top = mbitmap.getHeight()-facePositions[1];
+//                int bottom = mbitmap.getHeight()-facePositions[0];
+//                int height = bottom-top;
+//                int width = right-left;
+//                if(top+height>mbitmap.getHeight()) height = mbitmap.getHeight()-top;
+//                if(left+width>mbitmap.getWidth()) width = mbitmap.getWidth()-left;
+//                System.out.println("left"+left+"right"+right+"top"+top+"bottom"+bottom+"height"+height+"width"+width);
+//                bitmap = Bitmap.createBitmap(mbitmap, left, top, width, height);
+//                bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
+//                System.out.println("---cntFrame---"+cntFrame);
+//                int N = width * height;
+//                int[] pixels = new int[N];
+//                bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+//                float[][] rgb_raw= new float[3][N];
+//                float[] rgb=new float[3];
+//                int NonROIPointsNum = 0;
+//                for (int i = 0; i < N; i++) {//这里相当于对原始的rgb数据分开储存
+//                    int clr = pixels[i];//此处都还相当于int型数据
+//                    int R = (clr & 0x00ff0000) >> 16;
+//                    int G = (clr & 0x0000ff00) >> 8;
+//                    int B = clr & 0x000000ff;
+//                    //YCrCb颜色空间用于皮肤检测
+//                    float[] rgb_frame={R,G,B};
+////                float[] YCrCb = Algorithm.RGB2YCrCb(rgb_frame);
+//
+//                    rgb_raw[0][i] = R; // red 取高两位
+//                    rgb_raw[1][i] = G; // green 取中两位
+//                    rgb_raw[2][i] = B; // blue 取低两位
+//
+//                /*if((Algorithm.skinDetectionByYCrCb(YCrCb))) { //皮肤检测
+//                    rgb_raw[0][i] = R; // red 取高两位
+//                    rgb_raw[1][i] = G; // green 取中两位
+//                    rgb_raw[2][i] = B; // blue 取低两位
+//                }else{
+//                    NonROIPointsNum++;
+//                    rgb_raw[0][i] = 0;
+//                    rgb_raw[1][i] = 0;
+//                    rgb_raw[2][i] = 0;
+//                }*/
+//                }
+//                //计算完整bitmap像素均值
+//                rgb[0] = Algorithm.calculateAvg(rgb_raw[0]);
+//                rgb[1] = Algorithm.calculateAvg(rgb_raw[1]);
+//                rgb[2] = Algorithm.calculateAvg(rgb_raw[2]);
+//
+//            /*//获取皮肤区域像素均值
+//            rgb[0] = (rgb[0] * N) / (N - NonROIPointsNum);
+//            rgb[1] = (rgb[1] * N) / (N - NonROIPointsNum);
+//            rgb[2] = (rgb[2] * N) / (N - NonROIPointsNum);
+//            }*/
+//
+//                times =System.currentTimeMillis()-times;
+//                Log.d(TAG, "getRGB: 耗时"+times);
+//                frameFlag = true;
+//            }
             Log.d(TAG, "NEW KNOWN FACE UPDATE: "+face.getId());
         }
 
@@ -631,6 +776,10 @@ public class MainActivity extends AppCompatActivity {
                 binding.eulerX.setText("EulerX:"+0);//丢失
                 binding.eulerY.setText("EulerY:"+0);
                 binding.eulerZ.setText("EulerZ:"+0);
+                cntFrame=0;
+                cntPrepare=0;
+                heartRateValue = 0;
+                binding.heartrate.setText(" ");
                 Toast.makeText(MainActivity.this,"FACE MISSING",Toast.LENGTH_SHORT).show();
             });
             Log.d(TAG, "FACE MISSING");
@@ -646,6 +795,422 @@ public class MainActivity extends AppCompatActivity {
             mOverlay.remove(mFaceGraphic);
             mOverlay.clear();
             Log.d(TAG, "FACE GONE");
+        }
+
+        /**
+         * 按照人脸区域进行裁剪
+         * @param mBitmap height-1080 width-1920
+         * @para landmarkPositions 人脸框位置信息 width-1080 height-1920
+         *                          List<PointF> landmarkPositions,
+         * @return
+         */
+        public Bitmap cropBitmap(Bitmap mBitmap,int[] facePositions){
+//            int left = mBitmap.getWidth() / 2-100;
+//            int top = mBitmap.getHeight() / 2-mBitmap.getHeight()/4;
+//            int right = left+mBitmap.getWidth() / 4;
+//            int bottom = top+mBitmap.getHeight() / 2;
+            Bitmap bitmap;
+            int left = facePositions[2];
+            int right = facePositions[3];
+            int top = facePositions[1];
+            int bottom = facePositions[0];
+            System.out.println("left"+left+"right"+right+"top"+top+"bottom"+bottom);
+            bitmap = Bitmap.createBitmap(mBitmap, left, top, right-left, top-bottom);
+            Log.d("裁剪","bitmap width="+bitmap.getWidth()+" bitmap height="+bitmap.getHeight());
+            return bitmap;
+        }
+
+    }
+    //计算像素平均线程
+    public Handler getAvgRGBHandler() {
+        if (AvgRGBHandler == null) {
+            HandlerThread thread = new HandlerThread("AvgRGB");
+            thread.start();
+            AvgRGBHandler = new Handler(thread.getLooper());
+        }
+        return AvgRGBHandler;
+    }
+
+    //计算实时心率进程
+    public Handler getRealtimeHRHandler() {
+        if (RealtimeHRHandler == null) {
+            HandlerThread thread = new HandlerThread("RTHr");
+            thread.start();
+            RealtimeHRHandler = new Handler(thread.getLooper());
+        }
+        return RealtimeHRHandler;
+    }
+
+    //向DynamicWave传递数据和状态信息
+    public Handler getDWTransHandler() {
+        if (DWTransHandler == null) {
+            HandlerThread thread = new HandlerThread("DWTrans");
+            thread.start();
+            DWTransHandler = new Handler(thread.getLooper());
+        }
+        return DWTransHandler;
+    }
+
+    //本线程用于绘制DynamicWave
+    private class DWTransThread implements Runnable{
+        float data;
+        boolean isTransFinish;
+        boolean isReset;
+        public DWTransThread(float data_input,boolean isTransFinish_input,boolean isReset_input){
+            data=data_input;
+            isTransFinish=isTransFinish_input;
+            isReset=isReset_input;
+        }
+        @Override
+        public void run() {
+            if(isReset){//reset状态优先级最高
+                dynamicWave.reset();
+            }else{
+                dynamicWave.transDataNotInvalidate(data);
+                if(isTransFinish){//结束数据传入，此时可滑动数据
+                    dynamicWave.finishTransData();
+                }
+                dynamicWave.postInvalidate();//更新绘图
+            }
+        }
+    }
+
+    //本线程专门处理获取实时像素平均值
+    private class AvgRGBThread implements Runnable {
+        Bitmap mbitmap;
+        int[] facePositions;//getFacePositions left right top bottom
+        float[] input_data;
+        List<PointF> landmarkPositions;
+
+        public AvgRGBThread(Bitmap mbitmap,int[] facePositions,List<PointF> landmarkPositions) {
+            this.mbitmap=mbitmap;
+            this.facePositions=facePositions;
+            this.landmarkPositions=landmarkPositions;
+        }
+
+        @Override
+        public void run() {
+            frameFlag = false;
+            long times = System.currentTimeMillis();
+            try {
+                if (cntPrepare < DATA_PREPARE) {//丢弃前面60帧数据
+                    cntPrepare++;
+                    Log.d("cntPrepare准备", ""+cntPrepare);
+                } else{
+                    if (cntFrame < FRAME_NUM) {
+                        if(cntFrame==0){
+                            timer = System.currentTimeMillis();
+                        }
+                        Log.d(TAG, "run: 执行次数");
+//                        int left = facePositions[2];//对应屏幕的底部边缘
+//                        int right = facePositions[3]-100;//对应屏幕的上部
+//                        int top = mbitmap.getHeight() - facePositions[1];//对应屏幕的右边缘
+//                        int bottom = mbitmap.getHeight() - facePositions[0];//对应屏幕的左边缘
+                        int left = mbitmap.getWidth()-facePositions[3];//小
+                        int right = mbitmap.getWidth()-facePositions[2];
+                        int top = mbitmap.getHeight() - facePositions[1];//小
+                        int bottom = mbitmap.getHeight() - facePositions[0];
+                        int height = bottom - top;
+                        int width = right - left;
+                        if (top + height > mbitmap.getHeight()) height = mbitmap.getHeight() - top;
+                        if (left + width > mbitmap.getWidth()) width = mbitmap.getWidth() - left;
+                        System.out.println("left" + left + "right" + right + "top" + top + "bottom" + bottom + "height" + height + "width" + width);
+                        Matrix matrix = new Matrix();//旋转矩阵
+                        PointF faceCenter = landmarkPositions.get(8);
+                        matrix.postRotate(-mEulerZ,faceCenter.x,faceCenter.y);
+//                        Canvas cv = new Canvas( bitmap);
+//                        cv.rotate(-mEulerZ,faceCenter.x,faceCenter.y);
+//                        bitmap = Bitmap.createBitmap(mbitmap, 0, 0, mbitmap.getHeight(), mbitmap.getHeight() ,matrix,true);
+                        bitmap = Bitmap.createBitmap(mbitmap, left, top, width, height,matrix,true);//旋转
+                        bitmap = Bitmap.createBitmap(mbitmap, left, top, width, height);//仅裁剪
+                        bitmap = bitmap.copy(Bitmap.Config.ARGB_8888, true);
+                        saveROI();
+                        Log.d("cntFrame采集", ""+cntFrame);
+                        //getRGB
+                        //获取rgb值 像素点个数，输出数组长度
+                        int N = width * height;
+                        int[] pixels = new int[N];
+                        bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+                        float[][] rgb_raw = new float[3][N];
+                        float[] rgb = new float[3];
+                        int NonROIPointsNum = 0;
+                        for (int i = 0; i < N; i++) {//这里相当于对原始的rgb数据分开储存
+                            int clr = pixels[i];//此处都还相当于int型数据
+                            int R = (clr & 0x00ff0000) >> 16;
+                            int G = (clr & 0x0000ff00) >> 8;
+                            int B = clr & 0x000000ff;
+                            //YCrCb颜色空间用于皮肤检测
+                            float[] rgb_frame = {R, G, B};
+                            float[] YCrCb = Algorithm.RGB2YCrCb(rgb_frame);
+
+                            rgb_raw[0][i] = R; // red 取高两位
+                            rgb_raw[1][i] = G; // green 取中两位
+                            rgb_raw[2][i] = B; // blue 取低两位
+
+                            if ((Algorithm.skinDetectionByYCrCb(YCrCb))) { //皮肤检测
+                                rgb_raw[0][i] = R; // red 取高两位
+                                rgb_raw[1][i] = G; // green 取中两位
+                                rgb_raw[2][i] = B; // blue 取低两位
+                            } else {
+                                NonROIPointsNum++;
+                                rgb_raw[0][i] = 0;
+                                rgb_raw[1][i] = 0;
+                                rgb_raw[2][i] = 0;}
+                        }
+                        //计算完整bitmap像素均值
+                        rgb[0] = Algorithm.calculateAvg(rgb_raw[0]);
+                        rgb[1] = Algorithm.calculateAvg(rgb_raw[1]);
+                        rgb[2] = Algorithm.calculateAvg(rgb_raw[2]);
+
+                        //获取皮肤区域像素均值
+                        rgb[0] = (rgb[0] * N) / (N - NonROIPointsNum);
+                        rgb[1] = (rgb[1] * N) / (N - NonROIPointsNum);
+                        rgb[2] = (rgb[2] * N) / (N - NonROIPointsNum);
+
+                    //计算实时采样率
+                    long duration = System.currentTimeMillis();
+                    duration = (duration - timer)/1000;//ms 转 s
+                    if(duration==0) duration = 1;
+                    Log.d("持续时间", ""+duration);
+                    float RTfps = (float) cntFrame / duration;
+                    Log.d("实时采样率", ""+RTfps);
+                    //开启心率计算线程
+//                    RealtimeHRHandler = getRealtimeHRHandler();
+//                    if (RealtimeHRHandler != null) {
+//                        RealtimeHRHandler.post(new RealtimeHRThread(rgb_raw,RTfps,N,NonROIPointsNum)); //后台进程，实现心率计算
+//                    }
+                    float[] hsv = Algorithm.RGB2HSV(rgb);
+                    //保存每帧H通道pulse数据
+                    if (cntFrame < FRAME_NUM) {
+//                    pulse_rgb[0][cntFrame] = rgb_original[0]; //red
+//                    pulse_rgb[2][cntFrame] = rgb_original[2]; //blue
+//                    pulse_hsv[cntFrame] = hsv[0]; //调试用
+//                    pulse_green_debug[cntFrame]=rgb_original[1]; //调试用
+                    if(isNaN(hsv[0])){
+                            cntFrame--;}
+                    else{
+                            pulse_rgb[1][cntFrame] = hsv[0];} //H通道
+                    }
+                    if(cntFrame>WINDOW_SIZE && cntFrame%10==0){
+                        for (int i = cntFrame - WINDOW_SIZE; i < cntFrame; i++) {
+//                        dynamic_rgb[0][i - cntFrame + WINDOW_SIZE] = pulse_rgb[0][i];
+                            dynamic_rgb[1][i - cntFrame + WINDOW_SIZE] = pulse_rgb[1][i];
+//                        dynamic_rgb[2][i - cntFrame + WINDOW_SIZE] = pulse_rgb[2][i];
+                        }
+                    }
+                    input_data = dynamic_rgb[1];//H通道
+                    Log.d("原始波形",Arrays.toString(input_data));
+//                    float smoothed_data;
+//                    if(cntFrame>=3 && cntFrame<FRAME_NUM){
+//                        smoothed_data = (input_data[cntFrame - 2] + input_data[cntFrame-1] + input_data[cntFrame]) / 3;
+//                    }else{
+//                        smoothed_data = input_data[cntFrame];
+//                    }
+//                    if(cntFrame==(FRAME_NUM-1)){
+//                        //当前批次数据传入完毕，传入数据后执行finish
+//                        Handler DWTrans_handle = getDWTransHandler();
+//                        if (DWTrans_handle != null) {
+//                            DWTrans_handle.post(new DWTransThread(smoothed_data, true, false));
+//                            //DWTrans_handle.post(new DWTransThread(pulse_rgb[0][cnt], true, false));
+//                        }
+//                    }else{
+//                        //传入数据
+//                        Handler DWTrans_handle = getDWTransHandler();
+//                        if (DWTrans_handle != null) {
+//                            DWTrans_handle.post(new DWTransThread(smoothed_data, false, false)); }
+//                    }
+                    if(cntFrame>WINDOW_SIZE&&cntFrame<FRAME_NUM) {
+                        //计算实时心率
+                        if(RTfps<10.0 ){
+                            System.out.println("程序卡顿！！！");
+                        }else if(RTfps<20){
+                            System.out.println("温馨提示：您的手机性能较低，可能导致检测精度下降！");
+                        }
+                        //提取脉搏波
+                        float[] output_data=ExtractPulseWave(input_data,RTfps);
+                        Log.d("提取波形",Arrays.toString(output_data));
+                        //计算心率
+                        //heartRateValue=ComputeHrByPeakDetection(output_data,RTfps);
+                        double[] spec = Algorithm.CalcPulseSpectrum(output_data,RTfps);
+                        Log.d("实时频谱：",Arrays.toString(spec));
+                        int loc = Algorithm.findMaxLocation(spec);
+                        heartRateValue = (int) (60 * RTfps * loc / spec.length);
+                        Log.d("HeartRate结果：",heartRateValue+" ,loc="+loc+" ,N="+spec.length);
+                        //实时心率筛选、存储与显示
+                    }
+                    else if(cntFrame == FRAME_NUM){//最终心率结果
+                        //计算实时心率
+                        if(RTfps<10.0 ){
+                            System.out.println("程序卡顿！！！");
+                        }else if(RTfps<20){
+                            System.out.println("温馨提示：您的手机性能较低，可能导致检测精度下降！");
+                        }
+                        //提取脉搏波
+                        float[] output_data=ExtractPulseWave(pulse_rgb[1],RTfps);//选取全局计算
+                        Log.d("提取波形",Arrays.toString(output_data));
+                        //计算心率
+                        //heartRateValue=ComputeHrByPeakDetection(output_data,RTfps);
+                        double[] spec = Algorithm.CalcPulseSpectrum(output_data,RTfps);
+                        Log.d("实时频谱：",Arrays.toString(spec));
+                        int loc = Algorithm.findMaxLocation(spec);
+                        heartRateValue = (int) (60 * RTfps * loc / spec.length);
+                        Log.d("HeartRate结果：",heartRateValue+" ,loc="+loc+" ,N="+spec.length);
+                    }
+
+                    }
+                    //开始计数
+                    if(cntFrame==FRAME_NUM) {
+                        cntFrame=0;
+                        cntPrepare = 0;
+                    }
+                    cntFrame++;
+                }
+                }
+        catch(Exception e){
+            e.printStackTrace();}
+            finally{
+                times = System.currentTimeMillis() - times;
+                Log.d(TAG, "getRGB: 耗时" + times);
+            }
+            frameFlag = true;
+        }
+    }
+
+
+    //本线程专门处理获取实时心率的计算
+    private class RealtimeHRThread implements Runnable {
+        float[][] rgb_raw;
+        float[] rgb_original = new float[3];
+        float[] rgb = new float[3];
+        float[] input_data;
+        float RTfps;
+        int N;
+        int NonROIPointsNum;
+
+        public RealtimeHRThread(float[][] rgb_raw, float fs,int N,int NonROIPointsNum) {
+            this.rgb_raw=rgb_raw;
+            this.RTfps=fs;
+            this.N=N;
+            this.NonROIPointsNum=NonROIPointsNum;
+            if(this.RTfps>30){
+                this.RTfps=30;
+            }
+            Log.d("实时采样率：",Float.toString(RTfps));
+        }
+
+        @Override
+        public void run() {
+            long times = System.currentTimeMillis();
+            Log.d("HeartRate", "进入了");
+            //计算完整bitmap像素均值
+            rgb[0] = Algorithm.calculateAvg(rgb_raw[0]);
+            rgb[1] = Algorithm.calculateAvg(rgb_raw[1]);
+            rgb[2] = Algorithm.calculateAvg(rgb_raw[2]);
+            //获取每一帧皮肤区域像素均值
+            rgb_original[0] = (rgb[0] * N) / (N - NonROIPointsNum);
+            rgb_original[1] = (rgb[1] * N) / (N - NonROIPointsNum);
+            rgb_original[2] = (rgb[2] * N) / (N - NonROIPointsNum);
+            //获取波形数据
+            float[] hsv = Algorithm.RGB2HSV(rgb_original);
+            if (cntFrame < FRAME_NUM) {
+//                pulse_rgb[0][cntFrame] = rgb_original[0]; //red
+//                pulse_rgb[2][cntFrame] = rgb_original[2]; //blue
+//                  pulse_hsv[cntFrame] = hsv[0]; //调试用
+//                  pulse_green_debug[cntFrame]=rgb_original[1]; //调试用
+                if(hsv[0] == 0.0|| isNaN(hsv[0])){
+                    cntFrame--;
+                }
+                else{
+                    pulse_rgb[1][cntFrame] = hsv[0]; //H通道
+                }
+            }
+            //当cnt长度大于滑动窗口时开始计算实时心率
+//            for (int i = cntFrame - WINDOW_SIZE; i < cntFrame; i++) {
+//                dynamic_rgb[0][i - cntFrame + WINDOW_SIZE] = pulse_rgb[0][i];
+//                dynamic_rgb[1][i - cntFrame + WINDOW_SIZE] = pulse_rgb[1][i];
+//                dynamic_rgb[2][i - cntFrame + WINDOW_SIZE] = pulse_rgb[2][i];
+//            }
+            //设置输入通道
+            input_data = pulse_rgb[1];//H通道
+            Log.d("原始波形",Arrays.toString(input_data));
+            try {
+                if(cntFrame>=600) {
+//                    Log.d("R通道波形：",Arrays.toString(rgb_original[0]));
+//                    Log.d("G通道波形：",Arrays.toString(rgb_original[1]));
+//                    Log.d("B通道波形：",Arrays.toString(rgb_original[2]));
+                    //计算实时心率
+                    if(RTfps<10.0 ){
+                        System.out.println("程序卡顿！！！");
+                    }else if(RTfps<20){
+                        System.out.println("温馨提示：您的手机性能较低，可能导致检测精度下降！");
+                    }
+                    //提取脉搏波
+                    float[] output_data=ExtractPulseWave(input_data,RTfps);
+                    Log.d("提取波形",Arrays.toString(output_data));
+                    //计算心率
+                    //heartRateValue=ComputeHrByPeakDetection(output_data,RTfps);
+                    double[] spec = Algorithm.CalcPulseSpectrum(output_data,RTfps);
+                    Log.d("实时频谱：",Arrays.toString(spec));
+                    int loc = Algorithm.findMaxLocation(spec);
+                    heartRateValue = (int) (60 * RTfps * loc / spec.length);
+                    Log.d("HeartRate结果：",heartRateValue+" ,loc="+loc+" ,N="+spec.length);
+                    //实时心率筛选、存储与显示
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            } finally {
+                times =System.currentTimeMillis()-times;
+                Log.d(TAG, "实时心率: 耗时"+times);
+            }
+        }
+    }
+
+    //标准脉搏波提取
+    public float[] ExtractPulseWave(float[] input_data, float RTfps){
+
+        float[] output_data = new float[input_data.length];
+
+        //归一化处理
+        float max=Algorithm.findMax(input_data);
+        float min=Algorithm.findMin(input_data);
+        float avg=Algorithm.calculateAvg(input_data);
+        if(max==min){
+//            error_flag=true;
+            return input_data;
+        }
+        for(int i=0;i<input_data.length;i++){
+            output_data[i]=(input_data[i]-avg)/(max-min);
+        }
+        Log.d("1、归一化：",Arrays.toString(output_data));
+
+        output_data = Algorithm.MovingAverageFilter_3P(output_data);
+        Log.d("2、平滑：" , Arrays.toString(output_data));
+
+        //理想带通，采样点数必须2的指数幂
+        output_data = Algorithm.IdealPassing(output_data, RTfps, (float) 0.8, (float) 3.0);
+        Log.d("3、理想带通输出：" , Arrays.toString(output_data));
+
+        //尖峰压缩（波形跳变时，理想带通输出出现尖峰，通过该算法进行平滑）
+        output_data = Algorithm.SharpCompress(output_data,16);
+        Log.d("4、尖峰压缩输出：" , Arrays.toString(output_data));
+        return output_data;
+    }
+    /**
+     * 保存ROI区域到本地
+     */
+    public void saveROI(){
+        if(ROIFlag&&cntFrame==100){
+            File file = new File(image_test);
+            try {
+                file.createNewFile();
+                FileOutputStream fos = new FileOutputStream(file);
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                fos.close();
+                Log.d(TAG, "保存ROI区域");
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            ROIFlag =false;
         }
     }
 

@@ -40,8 +40,11 @@ public class CameraSourcePreview extends ViewGroup {
     private final int screenRotation;
 
     //设置预览尺寸
-    private static int PREVIEW_WIDTH = 1080;
-    private static int PREVIEW_HEIGHT = 1920;
+//    private static int PREVIEW_WIDTH = 1080;
+//    private static int PREVIEW_HEIGHT = 1920;
+    //设置预览尺寸 720p
+    private static int PREVIEW_WIDTH = 720;
+    private static int PREVIEW_HEIGHT = 1280;
 
     /**
      * CameraSourcePreview构造方法，实例化了SurfaceView和AutoFitTextureView

@@ -43,6 +43,10 @@ public class FaceGraphic extends GraphicOverlay.Graphic {
     private PointF leftCheek = null;
     private PointF rightCheek = null;
     private PointF faceCenter = null;
+    int faceLeft = 0;
+    int faceRight = 0;
+    int faceTop = 0;
+    int faceBottom = 0;
     private volatile Face mFace;
 
     public FaceGraphic(GraphicOverlay overlay, Context context) {
@@ -86,10 +90,10 @@ public class FaceGraphic extends GraphicOverlay.Graphic {
      * 返回特征点位置信息
      * @return 人脸特征点位置
      */
-    public List<PointF> getPositions(){
-        System.out.println("左眼位置"+leftEyePos.x+"---"+leftEyePos.y);
-        System.out.println("右眼位置"+rightEyePos.x+"---"+rightEyePos.y);
-        System.out.println("鼻子位置"+noseBasePos.x+"---"+noseBasePos.y);
+    public List<PointF> getLandmarkPositions(){
+//        System.out.println("左眼位置"+leftEyePos.x+"---"+leftEyePos.y);
+//        System.out.println("右眼位置"+rightEyePos.x+"---"+rightEyePos.y);
+//        System.out.println("鼻子位置"+noseBasePos.x+"---"+noseBasePos.y);
         List<PointF> positions =new ArrayList<>();
         positions.add(leftEyePos);
         positions.add(rightEyePos);
@@ -100,6 +104,16 @@ public class FaceGraphic extends GraphicOverlay.Graphic {
         positions.add(leftCheek);
         positions.add(rightCheek);
         positions.add(faceCenter);
+        return positions;
+    }
+
+    public int[] getFacePositions(){
+        int[] positions =new int[4];
+        positions[0] = faceLeft;
+        positions[1] = faceRight;
+        positions[2] = faceTop;
+        positions[3] = faceBottom;
+        System.out.println("faceLeft"+faceLeft+"faceRight"+faceRight+"faceTop"+faceTop+"faceBottom"+faceBottom);
         return positions;
     }
 
@@ -119,10 +133,10 @@ public class FaceGraphic extends GraphicOverlay.Graphic {
         float faceWidth = face.getWidth() * 4;//这里为什么要乘4
         float faceHeight = face.getHeight() * 4;
         faceCenter = new PointF(translateX(face.getPosition().x + faceWidth / 8), translateY(face.getPosition().y + faceHeight / 8));
-        int faceLeft = (int)translateX(face.getPosition().x + faceWidth / 8-0.125f*faceWidth);
-        int faceRight = (int)translateX(face.getPosition().x + faceWidth / 8+0.125f*faceWidth);
-        int faceTop = (int)translateY(face.getPosition().y + faceHeight / 8-0.125f*faceHeight);
-        int faceBottom = (int)translateY(face.getPosition().y + faceHeight / 8+0.125f*faceHeight);
+        faceLeft = (int)translateX(face.getPosition().x + faceWidth / 8-0.125f*faceWidth);
+        faceRight = (int)translateX(face.getPosition().x + faceWidth / 8+0.125f*faceWidth);
+        faceTop = (int)translateY(face.getPosition().y + faceHeight / 8-0.125f*faceHeight);
+        faceBottom = (int)translateY(face.getPosition().y + faceHeight / 8+0.125f*faceHeight);
         isSmilingProbability = face.getIsSmilingProbability();
         eyeRightOpenProbability = face.getIsRightEyeOpenProbability();
         eyeLeftOpenProbability = face.getIsLeftEyeOpenProbability();

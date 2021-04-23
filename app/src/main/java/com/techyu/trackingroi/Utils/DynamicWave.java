@@ -1,4 +1,4 @@
-package com.example.myapplicationhr;
+package com.techyu.trackingroi.Utils;
 
 import android.content.Context;
 import android.graphics.Canvas;
@@ -10,7 +10,8 @@ import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 
-import com.example.myapplicationhr.R;
+
+import com.techyu.trackingroi.R;
 
 import java.util.Vector;
 
